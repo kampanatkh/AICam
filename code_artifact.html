@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบประเมินทักษะการเลย์อัพด้วย AI (V.3 สมบูรณ์)</title>
+    <!-- เรียกใช้ Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- เรียกใช้ MediaPipe Pose และ Drawing Utils -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600&display=swap');
+        body { font-family: 'Sarabun', sans-serif; background-color: #f3f4f6; }
+        .canvas-container { position: relative; width: 100%; max-width: 800px; margin: auto; overflow: hidden; border-radius: 0.5rem;}
+        /* ซ่อน video ต้นฉบับอย่างเด็ดขาดเพื่อแก้ปัญหาภาพซ้อน */
+        video { display: none !important; width: 0; height: 0; position: absolute; }
+        canvas { width: 100%; height: auto; display: block; background-color: #111; }
+        .feedback-box { position: absolute; top: 10px; left: 10px; background: rgba(0, 0, 0, 0.75); color: white; padding: 10px 15px; border-radius: 8px; pointer-events: none; backdrop-filter: blur(4px); }
+    </style>
+</head>
+<body class="p-4 md:p-6">
+
+    <div class="max-w-4xl mx-auto bg-white p-4 md:p-6 rounded-xl shadow-lg">
+        <h1 class="text-xl md:text-2xl font-bold text-center text-blue-800 mb-2">ระบบประเมินทักษะการเลย์อัพด้วย AI</h1>
+        <p class="text-center text-gray-500 mb-4 text-sm md:text-base">โหมด: บันทึกและประเมินผล (AQA)</p>
+        
+        <!-- แผงควบคุมกล้อง -->
+        <div class="mb-4 flex flex-col sm:flex-row gap-2 justify-center items-center bg-gray-100 p-3 rounded-lg border border-gray-200">
+            <label for="camera-select" class="font-semibold text-gray-700">เลือกกล้อง:</label>
+            <select id="camera-select" class="p-2 border rounded bg-white text-gray-700 outline-none w-full sm:w-auto">
+                <option value="user">📷 กล้องหน้า (Front Camera)</option>
+                <option value="environment">📸 กล้องหลัง (Rear Camera)</option>
+            </select>
+            <button id="start-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded w-full sm:w-auto transition duration-300 disabled:opacity-50" disabled>
+                กำลังโหลด AI...
+            </button>
+        </div>
+
+        <!-- แผงควบคุมการบันทึกท่าทาง -->
+        <div id="recording-panel" class="mb-4 flex gap-2 justify-center hidden">
+            <button id="record-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition duration-300 text-lg flex items-center gap-2">
+                <span class="w-4 h-4 bg-red-500 rounded-full animate-pulse inline-block"></span>
+                กดเพื่อเริ่มประเมินท่าเลย์อัพ
+            </button>
+        </div>
+
+        <div class="canvas-container shadow-md">
+            <!-- ซ่อนวิดีโอต้นฉบับ ป้องกัน iOS เล่นเต็มจอ -->
+            <video id="input_video" autoplay playsinline></video>
+            <canvas id="output_canvas" width="640" height="480"></canvas>
+            
+            <!-- กล่องแสดงสถานะแบบเรียลไทม์ -->
+            <div class="feedback-box text-sm md:text-base hidden" id="realtime-status">
+                <h3 class="font-bold text-white mb-1 border-b border-gray-500 pb-1">สถานะ: <span id="current-state" class="text-yellow-300">เตรียมพร้อม</span></h3>
+            </div>
+            
+            <!-- กล่องสรุปผลการประเมินแบบองค์รวม (Popup) -->
+            <div id="result-overlay" class="absolute inset-0 bg-black bg-opacity-80 flex flex-col items-center justify-center text-white hidden p-6 text-center z-10">
+                <h2 class="text-2xl md:text-3xl font-bold text-yellow-400 mb-2">ผลการประเมินแบบองค์รวม</h2>
+                <p class="text-gray-300 mb-4">(Holistic Rubric)</p>
+                
+                <div class="w-full max-w-md bg-white text-gray-800 rounded-lg p-5 shadow-xl text-left">
+                    <div class="text-center mb-4 border-b pb-4">
+                        <p class="text-gray-500 text-sm uppercase tracking-wide">คะแนนที่ได้</p>
+                        <div class="flex items-center justify-center gap-2 mt-1">
+                            <span id="res-total-score" class="text-5xl font-extrabold text-blue-600">10</span>
+                            <span class="text-2xl font-bold text-gray-400">/ 10</span>
+                        </div>
+                        <p id="res-quality-level" class="text-lg font-bold mt-2 text-green-500">ระดับ: ดีมาก</p>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <p class="font-bold text-blue-800 border-l-4 border-blue-500 pl-2 mb-2">ข้อมูลจาก AI (Kinematic Data)</p>
+                        <ul class="text-sm text-gray-600 list-disc ml-5">
+                            <li id="res-data-arm">มุมเหยียดแขน: - องศา</li>
+                            <li id="res-data-knee">มุมยกเข่า: - องศา</li>
+                        </ul>
+                    </div>
+
+                    <div class="mb-2">
+                        <p class="font-bold text-blue-800 border-l-4 border-blue-500 pl-2 mb-2">คำอธิบายพฤติกรรม (Rubric Description)</p>
+                        <p id="res-rubric-desc" class="text-sm text-gray-700 bg-gray-50 p-3 rounded border">
+                            รอผลการประเมิน...
+                        </p>
+                    </div>
+                    
+                    <div id="res-ai-feedback-container" class="mt-3 hidden">
+                        <p class="font-bold text-red-600 border-l-4 border-red-500 pl-2 mb-2">จุดที่ต้องปรับปรุง (ข้อผิดพลาด)</p>
+                        <ul id="res-ai-feedback" class="text-sm text-gray-700 list-disc ml-5 text-red-500">
+                        </ul>
+                    </div>
+                </div>
+<!-- ปุ่มบันทึกข้อมูลลง Sheet -->
+<button id="save-score-btn" class="mt-4 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-full transition duration-300 shadow-lg flex items-center justify-center gap-2">
+    💾 บันทึกสถิติลงระบบ
+</button>
+                <button id="close-result-btn" class="mt-6 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-full transition duration-300 shadow-lg">
+                    ปิดและทดสอบใหม่
+                </button>
+            </div>
+        </div>
+
+        <div class="mt-4 p-3 bg-blue-50 text-blue-800 rounded border border-blue-200 text-sm">
+            <strong>ℹ️ วิธีใช้งาน:</strong> 
+            <ol class="list-decimal ml-5 mt-1">
+                <li>กด <strong>'เปิดกล้องเพื่อประเมิน'</strong> และยืนให้ห่างจากกล้อง (ให้เห็นเต็มตัว)</li>
+                <li>กด <strong>'กดเพื่อเริ่มประเมินท่าเลย์อัพ'</strong> (ปุ่มสีเขียว)</li>
+                <li>ทำท่าเลย์อัพ (กระโดดลอยตัว) ภายใน 3 วินาที</li>
+                <li>ระบบจะจับภาพจังหวะปล่อยลูก (จุดสูงสุด) และคำนวณคะแนนให้ทันที</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const startBtn = document.getElementById('start-btn');
+        const cameraSelect = document.getElementById('camera-select');
+        const recordBtn = document.getElementById('record-btn');
+        const recordingPanel = document.getElementById('recording-panel');
+        const realtimeStatus = document.getElementById('realtime-status');
+        const currentStateText = document.getElementById('current-state');
+        const resultOverlay = document.getElementById('result-overlay');
+        const closeResultBtn = document.getElementById('close-result-btn');
+
+        let isRunning = false;
+        let isRecording = false;
+        let stream = null;
+        let animationFrameId = null;
+        
+        // ตัวแปรเก็บค่าที่ดีที่สุดใน 1 รอบการเลย์อัพ
+        let peakWristY = 1.0; 
+        let peakArmAngle = 0;
+        let peakKneeAngle = 0;
+        let frameCount = 0;
+
+        // 1. ฟังก์ชันคำนวณมุมระหว่าง 3 จุด
+        function calculateAngle(a, b, c) {
+            const radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+            let angle = Math.abs(radians * 180.0 / Math.PI);
+            if (angle > 180.0) angle = 360 - angle;
+            return angle;
+        }
+
+        // 2. ฟังก์ชันประมวลผลผลลัพธ์จาก MediaPipe (หัวใจหลักของ AI)
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // วาดภาพวิดีโอลงบน Canvas
+            if (results.image) {
+                canvasElement.width = results.image.width;
+                canvasElement.height = results.image.height;
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            }
+
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+                
+                // วาดเส้นโครงกระดูก (สีเขียวคือเส้น, สีแดงคือจุดข้อต่อ)
+                drawConnectors(canvasCtx, landmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+                drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2, radius: 3});
+
+                // ดึงพิกัด (ใช้ฝั่งขวาในการคำนวณเป็นหลัก)
+                const rShoulder = landmarks[12]; const rElbow = landmarks[14]; const rWrist = landmarks[16];
+                const rHip = landmarks[24]; const rKnee = landmarks[26]; const rAnkle = landmarks[28];
+
+                // เช็กว่าร่างกายอยู่ในเฟรมกล้องหรือไม่ (visibility > 0.5)
+                const isArmVisible = (rShoulder.visibility > 0.5 && rElbow.visibility > 0.5 && rWrist.visibility > 0.5);
+                const isLegVisible = (rHip.visibility > 0.5 && rKnee.visibility > 0.5 && rAnkle.visibility > 0.5);
+
+                canvasCtx.fillStyle = '#FFFFFF';
+                canvasCtx.font = '24px Arial';
+
+                let currentArmAngle = 0;
+                let currentKneeAngle = 0;
+
+                // คำนวณและวาดมุมแบบ Real-time
+                if (isArmVisible) {
+                    currentArmAngle = calculateAngle(rShoulder, rElbow, rWrist);
+                    canvasCtx.fillText(Math.round(currentArmAngle) + '°', rElbow.x * canvasElement.width + 15, rElbow.y * canvasElement.height);
+                }
+                if (isLegVisible) {
+                    currentKneeAngle = calculateAngle(rHip, rKnee, rAnkle);
+                    canvasCtx.fillText(Math.round(currentKneeAngle) + '°', rKnee.x * canvasElement.width + 15, rKnee.y * canvasElement.height);
+                }
+
+                // --- ลอจิกการบันทึก (Recording Phase) ---
+                if (isRecording) {
+                    // ป้องกันระบบพังถ้ามองไม่เห็นตัว ให้แจ้งเตือนแทน
+                    if (!isArmVisible || !isLegVisible) {
+                        currentStateText.innerText = "มองไม่เห็นตัว! ถอยหลังอีกนิด";
+                        currentStateText.className = "text-red-400";
+                    } else {
+                        frameCount++;
+                        // หาจุดปล่อยลูก (Release Point): จุดที่ข้อมืออยู่สูงที่สุด (ค่าแกน Y น้อยที่สุด)
+                        if (rWrist.y < peakWristY) {
+                            peakWristY = rWrist.y;
+                            peakArmAngle = currentArmAngle;
+                            peakKneeAngle = currentKneeAngle;
+                            currentStateText.innerText = "กำลังจับจังหวะกระโดด...";
+                            currentStateText.className = "text-green-400";
+                        }
+
+                        // บันทึกประมาณ 90 เฟรม (ประมาณ 3 วินาที) แล้วหยุดอัตโนมัติ
+                        if (frameCount > 90) {
+                            finishRecording();
+                        }
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        // 3. ฟังก์ชันประเมินคะแนนแบบองค์รวม (Holistic Rubric 1-10)
+        function evaluateHolisticScore(armAngle, kneeAngle) {
+            let score = 10; // ตั้งต้นที่คะแนนเต็ม
+            let errors = []; // เก็บรายการข้อผิดพลาดที่ AI ตรวจพบ
+
+            // วิเคราะห์การเหยียดแขน (หักลบคะแนนตามข้อผิดพลาด)
+            if (armAngle < 120) {
+                score -= 3;
+                errors.push("แขนงอเกินไปในจังหวะปล่อยลูก ต้องออกแรงผลักและเหยียดแขนให้ตึง");
+            } else if (armAngle < 140) {
+                score -= 2;
+                errors.push("แขนเหยียดไม่สุดในจังหวะปล่อยลูก");
+            } else if (armAngle < 155) {
+                score -= 1;
+                errors.push("แขนเกือบตึงแล้ว สามารถเหยียดข้อศอกได้อีกเล็กน้อย");
+            }
+
+            // วิเคราะห์การยกเข่า (หักลบคะแนนตามข้อผิดพลาด)
+            if (kneeAngle > 150) {
+                score -= 3;
+                errors.push("แทบไม่ได้ยกเข่าเลย ทำให้ขาดแรงส่งตัวในแนวดิ่ง");
+            } else if (kneeAngle > 130) {
+                score -= 2;
+                errors.push("ยกเข่าต่ำเกินไป ควรดึงเข่าขึ้นให้ใกล้เคียงกับระดับสะโพก");
+            } else if (kneeAngle > 110) {
+                score -= 1;
+                errors.push("ยกเข่าได้ค่อนข้างดี แต่ยังต่ำกว่าระดับสะโพกเล็กน้อย");
+            }
+
+            // จำกัดช่วงคะแนนให้อยู่ระหว่าง 1 ถึง 10
+            if (score < 1) score = 1;
+            if (score > 10) score = 10;
+            
+            // กรณีระบบจับภาพไม่ได้เลยหรือยืนเฉยๆ
+            if (armAngle === 0 && kneeAngle === 0) {
+                score = 1;
+                errors.push("ระบบไม่สามารถตรวจจับท่าทางได้ หรือผู้ประเมินไม่ได้ทำการกระโดด");
+            }
+
+            // กำหนดระดับคุณภาพและสี (อิงตามเกณฑ์การแปลผล)
+            let levelText = "";
+            let levelColor = "";
+            if (score >= 9) { levelText = "ระดับ: ดีมาก"; levelColor = "text-green-500"; }
+            else if (score >= 7) { levelText = "ระดับ: ดี"; levelColor = "text-blue-500"; }
+            else if (score >= 5) { levelText = "ระดับ: ปานกลาง"; levelColor = "text-orange-500"; }
+            else { levelText = "ระดับ: ต้องปรับปรุง"; levelColor = "text-red-500"; }
+
+            // จับคู่คำอธิบายเกณฑ์ (Holistic Rubric) ตามตาราง
+            let rubricDesc = "";
+            switch(score) {
+                case 10: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้ถูกต้องสมบูรณ์ทุกขั้นตอน ก้าวเท้าสองจังหวะถูกต้อง ยกเข่าข้างที่ถูกต้องสูงเหนือระดับสะโพก ผลักตัวขึ้นอย่างมีพลัง ถ่ายโอนแรงจากแนวราบเป็นแนวดิ่ง ปล่อยลูกด้วยแขนที่เหยียดตึง ลงพื้นสมดุล"; break;
+                case 9: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้ถูกต้องเกือบสมบูรณ์ การเคลื่อนไหวราบรื่น มีข้อผิดพลาดเล็กน้อยเพียง 1 จุด องค์ประกอบอื่นๆ ทั้งหมดถูกต้องสมบูรณ์"; break;
+                case 8: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้ดี มีข้อผิดพลาดเล็กน้อย 1-2 จุด โครงสร้างหลักถูกต้อง ก้าวเท้าถูกลำดับ ยกเข่าข้างที่ถูกต้อง ลงพื้นได้สมดุล"; break;
+                case 7: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้ค่อนข้างดี มีข้อผิดพลาดเล็กน้อย 2-3 จุด แต่ยังคงรักษาโครงสร้างหลักของการเลย์อัพได้"; break;
+                case 6: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้พอใช้ เข้าใจโครงสร้างหลักของทักษะ แต่มีข้อผิดพลาดที่เห็นได้ชัดในบางขั้นตอน"; break;
+                case 5: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้ในระดับพื้นฐาน แสดงให้เห็นว่าเข้าใจขั้นตอนหลักแต่ยังปฏิบัติได้ไม่สม่ำเสมอ ร่างกายเคลื่อนไปในแนวราบมากกว่าแนวดิ่ง"; break;
+                case 4: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้บางส่วน มีข้อผิดพลาดที่เห็นได้ชัดในหลายขั้นตอน เช่น เข่ายกไม่สูง กระโดดได้ต่ำ ลงพื้นรักษาสมดุลไม่ดี"; break;
+                case 3: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้น้อย มีข้อผิดพลาดมากในเกือบทุกขั้นตอน ขาดจังหวะอย่างมาก เข่าแทบไม่ยก กระโดดแทบไม่พ้นพื้น"; break;
+                case 2: rubricDesc = "ปฏิบัติทักษะการเลย์อัพได้น้อยมาก ก้าวเท้าผิดลำดับ ไม่ยกเข่า ไม่กระโดด ลงพื้นไม่มั่นคง"; break;
+                case 1: rubricDesc = "ไม่สามารถปฏิบัติทักษะการเลย์อัพได้ หรือปฏิบัติผิดพลาดในทุกขั้นตอน หรือสูญเสียสมดุลอย่างชัดเจน"; break;
+            }
+
+            // แสดงผลลัพธ์บน UI
+            document.getElementById('res-total-score').innerText = score;
+            document.getElementById('res-quality-level').innerText = levelText;
+            document.getElementById('res-quality-level').className = `text-lg font-bold mt-2 ${levelColor}`;
+            document.getElementById('res-data-arm').innerText = `มุมเหยียดแขน (จุดปล่อยลูก): ${Math.round(armAngle)}°`;
+            document.getElementById('res-data-knee').innerText = `มุมยกเข่า (จุดลอยตัว): ${Math.round(kneeAngle)}°`;
+            document.getElementById('res-rubric-desc').innerText = rubricDesc;
+
+            // แสดงรายการข้อผิดพลาด (เพื่อเป็น Feedback แบบเฉพาะเจาะจงให้ผู้เรียน)
+            const feedbackContainer = document.getElementById('res-ai-feedback-container');
+            const feedbackList = document.getElementById('res-ai-feedback');
+            feedbackList.innerHTML = ""; 
+            
+            if (errors.length > 0 && score < 10) {
+                feedbackContainer.classList.remove('hidden');
+                errors.forEach(err => {
+                    let li = document.createElement('li');
+                    li.innerText = err;
+                    feedbackList.appendChild(li);
+                });
+            } else {
+                feedbackContainer.classList.add('hidden');
+            }
+
+            resultOverlay.classList.remove('hidden');
+        }
+
+        // 4. การจัดการปุ่ม "เริ่มบันทึกการประเมิน"
+        recordBtn.addEventListener('click', () => {
+            isRecording = true;
+            peakWristY = 1.0; 
+            peakArmAngle = 0;
+            peakKneeAngle = 0;
+            frameCount = 0;
+            
+            recordBtn.classList.add('hidden');
+            realtimeStatus.classList.remove('hidden');
+            currentStateText.innerText = "เริ่มทำท่าเลย์อัพได้เลย!";
+            currentStateText.className = "text-green-400";
+        });
+
+        // จบการบันทึก (เมื่อครบ 3 วินาที)
+        function finishRecording() {
+            isRecording = false;
+            realtimeStatus.classList.add('hidden');
+            // หากมุมยังเป็น 0 แสดงว่าจับภาพไม่ได้เลย
+            if (peakArmAngle === 0 && peakKneeAngle === 0) {
+                alert("เกิดข้อผิดพลาด: ระบบตรวจไม่พบท่าทาง กรุณาตั้งกล้องใหม่ให้เห็นชัดเจนและทดสอบอีกครั้ง");
+                recordBtn.classList.remove('hidden');
+                return;
+            }
+            evaluateHolisticScore(peakArmAngle, peakKneeAngle);
+        }
+
+        // ปิดหน้าจอผลลัพธ์
+        closeResultBtn.addEventListener('click', () => {
+            resultOverlay.classList.add('hidden');
+            recordBtn.classList.remove('hidden');
+        });
+
+        // 5. ตั้งค่าโมเดล MediaPipe Pose
+        const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+        pose.setOptions({
+            modelComplexity: 1, 
+            smoothLandmarks: true, 
+            enableSegmentation: false,
+            minDetectionConfidence: 0.5, 
+            minTrackingConfidence: 0.5
+        });
+        pose.onResults(onResults);
+
+        // รอโมเดลโหลดเสร็จ
+        pose.initialize().then(() => {
+            startBtn.innerText = "▶ เปิดกล้องเพื่อประเมิน";
+            startBtn.disabled = false;
+        });
+
+        // 6. ระบบส่งภาพจากวิดีโอไปให้ AI ประมวลผลแบบลูป
+        async function processVideo() {
+            if (!isRunning) return;
+            if (videoElement.readyState >= 2) {
+                await pose.send({image: videoElement});
+            }
+            animationFrameId = requestAnimationFrame(processVideo);
+        }
+
+        // 7. ฟังก์ชันเปิด/ปิดกล้อง
+        async function startCamera() {
+            if (stream) { stream.getTracks().forEach(track => track.stop()); }
+            
+            const facingMode = cameraSelect.value;
+            const constraints = {
+                video: { facingMode: facingMode, width: { ideal: 640 }, height: { ideal: 480 } }
+            };
+
+            try {
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = stream;
+                
+                videoElement.onloadedmetadata = () => {
+                    videoElement.play();
+                    isRunning = true;
+                    recordingPanel.classList.remove('hidden');
+                    processVideo(); 
+                };
+
+                startBtn.innerText = "⏹ ปิดกล้อง";
+                startBtn.classList.replace('bg-blue-600', 'bg-red-600');
+                startBtn.classList.replace('hover:bg-blue-700', 'hover:bg-red-700');
+            } catch (err) {
+                console.error(err);
+                alert("ไม่สามารถเข้าถึงกล้องได้ กรุณาอนุญาตให้เบราว์เซอร์ใช้กล้อง");
+                isRunning = false;
+            }
+        }
+
+        // กดปุ่ม เปิด/ปิด กล้อง
+        startBtn.addEventListener('click', () => {
+            if (!isRunning) {
+                startCamera();
+            } else {
+                isRunning = false;
+                isRecording = false;
+                cancelAnimationFrame(animationFrameId);
+                if (stream) { stream.getTracks().forEach(track => track.stop()); }
+                
+                startBtn.innerText = "▶ เปิดกล้องเพื่อประเมิน";
+                startBtn.classList.replace('bg-red-600', 'bg-blue-600');
+                startBtn.classList.replace('hover:bg-red-700', 'hover:bg-blue-700');
+                
+                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                recordingPanel.classList.add('hidden');
+                realtimeStatus.classList.add('hidden');
+                resultOverlay.classList.add('hidden');
+            }
+        });
+
+        // เปลี่ยนกล้องหน้า/หลังแบบเรียลไทม์
+        cameraSelect.addEventListener('change', () => {
+            if (isRunning) { startCamera(); }
+        });
+
+    </script>
+</body>
+</html>
